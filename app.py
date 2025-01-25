@@ -1,3 +1,11 @@
+#------------------------------------------------------------------------------------------------
+# 1. Field to put my JD
+# 2. Updoad PDF
+# 3. PDF to  image---->processing --> Google Gemini pro
+# 4. Prompts template  [multiple Prompts]
+#--------------------------------------------------------------------------------------------
+
+
 from dotenv import load_dotenv
 import streamlit as st
 import os
