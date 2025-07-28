@@ -256,6 +256,6 @@ If you encounter any issues or have questions:
 
 ---
 
-**Made with ❤️ by [Your Name]**
+**Made with ❤️ by Priya Rathor**
 
 *Transform your job search with AI-powered resume analysis!*
