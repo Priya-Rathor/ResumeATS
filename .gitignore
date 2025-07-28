@@ -76,3 +76,5 @@ yarn-error.log*
 
 # VS Code settings
 *.code-workspace
+
+venv
