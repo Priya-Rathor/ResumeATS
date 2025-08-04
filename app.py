@@ -1,50 +1,57 @@
-from flask import Flask, render_template_string, request, redirect, url_for, session, flash, jsonify
-from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, status
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from datetime import datetime
 import os
 import io
 import base64
 from PIL import Image
 import pdf2image
 import google.generativeai as genai
-from datetime import datetime
 import sqlite3
-import secrets
+from typing import Optional
+import uvicorn
 
-# Initialize Flask app
-app = Flask(__name__)
-app.secret_key = secrets.token_hex(16)
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+# Initialize FastAPI app
+app = FastAPI(title="ATS Resume Analyzer API", version="1.0.0")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
+# Configuration
+UPLOAD_FOLDER = 'uploads'
+MAX_FILE_SIZE = 16 * 1024 * 1024  # 16MB
 
 # Create uploads directory if it doesn't exist
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Configure Google Gemini API
 genai.configure(api_key="AIzaSyCGqs_KDUWBeUKQ51tz1DyXXPWzWxZpliU")
+
+# Pydantic models
+class AnalysisResponse(BaseModel):
+    success: bool
+    result: Optional[str] = None
+    error: Optional[str] = None
 
 # Database setup
 def init_db():
     conn = sqlite3.connect('ats_app.db')
     c = conn.cursor()
     c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    c.execute('''
         CREATE TABLE IF NOT EXISTS analyses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
             job_description TEXT,
             analysis_type TEXT,
             result TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users (id)
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     conn.commit()
@@ -63,13 +70,13 @@ def get_gemini_response(input_text, pdf_content, prompt):
         return f"Error in generating response: {str(e)}"
 
 # Function to process uploaded PDF
-def input_pdf_setup(uploaded_file):
+def input_pdf_setup(uploaded_file: bytes):
     try:
         # For Windows, specify Poppler path (update this for your setup)
         poppler_path = r"C:\Users\USER\Downloads\Release-24.08.0-0\poppler-24.08.0\Library\bin"
         
         # Convert PDF to images
-        images = pdf2image.convert_from_bytes(uploaded_file.read(), poppler_path=poppler_path)
+        images = pdf2image.convert_from_bytes(uploaded_file, poppler_path=poppler_path)
         first_page = images[0]
 
         # Convert image to bytes
@@ -87,797 +94,66 @@ def input_pdf_setup(uploaded_file):
     except Exception as e:
         raise RuntimeError(f"Error processing PDF: {str(e)}")
 
-# HTML Templates
-LOGIN_TEMPLATE = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ATS Resume Analyzer - Login</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        
-        .login-container {
-            background: white;
-            padding: 2rem;
-            border-radius: 15px;
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1);
-            width: 100%;
-            max-width: 400px;
-            backdrop-filter: blur(10px);
-        }
-        
-        .logo {
-            text-align: center;
-            margin-bottom: 2rem;
-        }
-        
-        .logo h1 {
-            color: #333;
-            font-size: 2rem;
-            margin-bottom: 0.5rem;
-        }
-        
-        .logo p {
-            color: #666;
-            font-size: 0.9rem;
-        }
-        
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-        
-        .form-group label {
-            display: block;
-            margin-bottom: 0.5rem;
-            color: #333;
-            font-weight: 500;
-        }
-        
-        .form-group input {
-            width: 100%;
-            padding: 0.75rem;
-            border: 2px solid #e1e5e9;
-            border-radius: 8px;
-            font-size: 1rem;
-            transition: border-color 0.3s ease;
-        }
-        
-        .form-group input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        
-        .btn {
-            width: 100%;
-            padding: 0.75rem;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 0.2s ease;
-        }
-        
-        .btn:hover {
-            transform: translateY(-2px);
-        }
-        
-        .switch-form {
-            text-align: center;
-            margin-top: 1.5rem;
-            color: #666;
-        }
-        
-        .switch-form a {
-            color: #667eea;
-            text-decoration: none;
-            font-weight: 600;
-        }
-        
-        .switch-form a:hover {
-            text-decoration: underline;
-        }
-        
-        .alert {
-            padding: 0.75rem;
-            margin-bottom: 1rem;
-            border-radius: 8px;
-            border-left: 4px solid #e74c3c;
-            background-color: #fdf2f2;
-            color: #721c24;
-        }
-    </style>
-</head>
-<body>
-    <div class="login-container">
-        <div class="logo">
-            <h1>🎯 ATS Analyzer</h1>
-            <p>Resume Analysis & Job Matching</p>
-        </div>
-        
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                {% for message in messages %}
-                    <div class="alert">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        
-        <form method="POST">
-            <div class="form-group">
-                <label for="username">Username</label>
-                <input type="text" id="username" name="username" required>
-            </div>
-            
-            <div class="form-group">
-                <label for="password">Password</label>
-                <input type="password" id="password" name="password" required>
-            </div>
-            
-            <button type="submit" class="btn">Sign In</button>
-        </form>
-        
-        <div class="switch-form">
-            Don't have an account? <a href="{{ url_for('signup') }}">Sign up here</a>
-        </div>
-    </div>
-</body>
-</html>
-'''
+# API Routes
 
-SIGNUP_TEMPLATE = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ATS Resume Analyzer - Sign Up</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        
-        .signup-container {
-            background: white;
-            padding: 2rem;
-            border-radius: 15px;
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1);
-            width: 100%;
-            max-width: 400px;
-            backdrop-filter: blur(10px);
-        }
-        
-        .logo {
-            text-align: center;
-            margin-bottom: 2rem;
-        }
-        
-        .logo h1 {
-            color: #333;
-            font-size: 2rem;
-            margin-bottom: 0.5rem;
-        }
-        
-        .logo p {
-            color: #666;
-            font-size: 0.9rem;
-        }
-        
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-        
-        .form-group label {
-            display: block;
-            margin-bottom: 0.5rem;
-            color: #333;
-            font-weight: 500;
-        }
-        
-        .form-group input {
-            width: 100%;
-            padding: 0.75rem;
-            border: 2px solid #e1e5e9;
-            border-radius: 8px;
-            font-size: 1rem;
-            transition: border-color 0.3s ease;
-        }
-        
-        .form-group input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        
-        .btn {
-            width: 100%;
-            padding: 0.75rem;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 0.2s ease;
-        }
-        
-        .btn:hover {
-            transform: translateY(-2px);
-        }
-        
-        .switch-form {
-            text-align: center;
-            margin-top: 1.5rem;
-            color: #666;
-        }
-        
-        .switch-form a {
-            color: #667eea;
-            text-decoration: none;
-            font-weight: 600;
-        }
-        
-        .switch-form a:hover {
-            text-decoration: underline;
-        }
-        
-        .alert {
-            padding: 0.75rem;
-            margin-bottom: 1rem;
-            border-radius: 8px;
-            border-left: 4px solid #e74c3c;
-            background-color: #fdf2f2;
-            color: #721c24;
-        }
-    </style>
-</head>
-<body>
-    <div class="signup-container">
-        <div class="logo">
-            <h1>🎯 ATS Analyzer</h1>
-            <p>Create Your Account</p>
-        </div>
-        
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                {% for message in messages %}
-                    <div class="alert">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        
-        <form method="POST">
-            <div class="form-group">
-                <label for="username">Username</label>
-                <input type="text" id="username" name="username" required>
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return """
+    <html>
+        <head>
+            <title>ATS Resume Analyzer API</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; }
+                h1 { color: #333; }
+                .info { background: #f0f0f0; padding: 20px; border-radius: 8px; margin: 20px 0; }
+                a { color: #667eea; text-decoration: none; }
+                a:hover { text-decoration: underline; }
+            </style>
+        </head>
+        <body>
+            <h1>🎯 ATS Resume Analyzer API</h1>
+            <div class="info">
+                <p><strong>API is running successfully!</strong></p>
+                <p>Available endpoints:</p>
+                <ul>
+                    <li><a href="/docs">/docs</a> - Interactive API documentation</li>
+                    <li><a href="/redoc">/redoc</a> - Alternative API documentation</li>
+                    <li><a href="/health">/health</a> - Health check</li>
+                </ul>
             </div>
-            
-            <div class="form-group">
-                <label for="email">Email</label>
-                <input type="email" id="email" name="email" required>
+            <div class="info">
+                <h3>Quick Start:</h3>
+                <p>Use POST <code>/api/analyze</code> to analyze resumes with job descriptions.</p>
+                <p>Use GET <code>/api/analyses</code> to view analysis history.</p>
             </div>
-            
-            <div class="form-group">
-                <label for="password">Password</label>
-                <input type="password" id="password" name="password" required>
-            </div>
-            
-            <div class="form-group">
-                <label for="confirm_password">Confirm Password</label>
-                <input type="password" id="confirm_password" name="confirm_password" required>
-            </div>
-            
-            <button type="submit" class="btn">Create Account</button>
-        </form>
-        
-        <div class="switch-form">
-            Already have an account? <a href="{{ url_for('login') }}">Sign in here</a>
-        </div>
-    </div>
-</body>
-</html>
-'''
+        </body>
+    </html>
+    """
 
-DASHBOARD_TEMPLATE = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ATS Resume Analyzer - Dashboard</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f8f9ff;
-            min-height: 100vh;
-        }
-        
-        .navbar {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 1rem 0;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-        }
-        
-        .nav-container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 0 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .logo h1 {
-            font-size: 1.5rem;
-        }
-        
-        .nav-links {
-            display: flex;
-            gap: 2rem;
-            align-items: center;
-        }
-        
-        .nav-links a {
-            color: white;
-            text-decoration: none;
-            font-weight: 500;
-            transition: opacity 0.3s ease;
-        }
-        
-        .nav-links a:hover {
-            opacity: 0.8;
-        }
-        
-        .main-container {
-            max-width: 1200px;
-            margin: 2rem auto;
-            padding: 0 2rem;
-        }
-        
-        .welcome-section {
-            background: white;
-            padding: 2rem;
-            border-radius: 15px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
-            margin-bottom: 2rem;
-        }
-        
-        .welcome-section h2 {
-            color: #333;
-            margin-bottom: 0.5rem;
-        }
-        
-        .welcome-section p {
-            color: #666;
-        }
-        
-        .analysis-section {
-            background: white;
-            padding: 2rem;
-            border-radius: 15px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
-            margin-bottom: 2rem;
-        }
-        
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-        
-        .form-group label {
-            display: block;
-            margin-bottom: 0.5rem;
-            color: #333;
-            font-weight: 600;
-        }
-        
-        .form-group textarea {
-            width: 100%;
-            padding: 1rem;
-            border: 2px solid #e1e5e9;
-            border-radius: 8px;
-            font-size: 1rem;
-            font-family: inherit;
-            resize: vertical;
-            min-height: 120px;
-            transition: border-color 0.3s ease;
-        }
-        
-        .form-group textarea:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        
-        .file-upload {
-            position: relative;
-            display: inline-block;
-            width: 100%;
-        }
-        
-        .file-upload input[type="file"] {
-            display: none;
-        }
-        
-        .file-upload-btn {
-            display: block;
-            width: 100%;
-            padding: 1rem;
-            background: #f8f9ff;
-            border: 2px dashed #667eea;
-            border-radius: 8px;
-            text-align: center;
-            color: #667eea;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        
-        .file-upload-btn:hover {
-            background: #667eea;
-            color: white;
-        }
-        
-        .file-selected {
-            margin-top: 0.5rem;
-            color: #28a745;
-            font-weight: 500;
-        }
-        
-        .button-group {
-            display: flex;
-            gap: 1rem;
-            margin-top: 2rem;
-        }
-        
-        .btn {
-            flex: 1;
-            padding: 0.75rem 1.5rem;
-            border: none;
-            border-radius: 8px;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-        
-        .btn-secondary {
-            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
-            color: white;
-        }
-        
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
-        }
-        
-        .btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
-        }
-        
-        .result-section {
-            background: white;
-            padding: 2rem;
-            border-radius: 15px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
-            margin-top: 2rem;
-            display: none;
-        }
-        
-        .result-section h3 {
-            color: #333;
-            margin-bottom: 1rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        
-        .result-content {
-            background: #f8f9ff;
-            padding: 1.5rem;
-            border-radius: 8px;
-            border-left: 4px solid #667eea;
-            white-space: pre-wrap;
-            line-height: 1.6;
-        }
-        
-        .loading {
-            text-align: center;
-            padding: 2rem;
-            color: #667eea;
-        }
-        
-        .loading::after {
-            content: '';
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #667eea;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-left: 10px;
-        }
-        
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        
-        .alert {
-            padding: 1rem;
-            margin-bottom: 1rem;
-            border-radius: 8px;
-            border-left: 4px solid #e74c3c;
-            background-color: #fdf2f2;
-            color: #721c24;
-        }
-        
-        .alert.success {
-            border-left-color: #28a745;
-            background-color: #f2fdf4;
-            color: #1e4d23;
-        }
-    </style>
-</head>
-<body>
-    <nav class="navbar">
-        <div class="nav-container">
-            <div class="logo">
-                <h1>🎯 ATS Resume Analyzer</h1>
-            </div>
-            <div class="nav-links">
-                <span>Welcome, {{ session.username }}!</span>
-                <a href="{{ url_for('logout') }}">Logout</a>
-            </div>
-        </div>
-    </nav>
-    
-    <div class="main-container">
-        <div class="welcome-section">
-            <h2>Resume Analysis Dashboard</h2>
-            <p>Upload your resume and job description to get AI-powered insights and match percentage analysis.</p>
-        </div>
-        
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="alert {{ 'success' if category == 'success' else '' }}">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        
-        <div class="analysis-section">
-            <form id="analysisForm" enctype="multipart/form-data">
-                <div class="form-group">
-                    <label for="jobDescription">Job Description</label>
-                    <textarea id="jobDescription" name="job_description" placeholder="Paste the job description here..." required></textarea>
-                </div>
-                
-                <div class="form-group">
-                    <label>Upload Resume (PDF)</label>
-                    <div class="file-upload">
-                        <input type="file" id="resumeFile" name="resume_file" accept=".pdf" required>
-                        <label for="resumeFile" class="file-upload-btn">
-                            📄 Click to upload your resume (PDF only)
-                        </label>
-                        <div id="fileSelected" class="file-selected" style="display: none;"></div>
-                    </div>
-                </div>
-                
-                <div class="button-group">
-                    <button type="button" class="btn btn-primary" onclick="analyzeResume('profile')">
-                        📋 Analyze Resume Profile
-                    </button>
-                    <button type="button" class="btn btn-secondary" onclick="analyzeResume('match')">
-                        📊 Get Match Percentage
-                    </button>
-                </div>
-            </form>
-        </div>
-        
-        <div id="resultSection" class="result-section">
-            <h3 id="resultTitle">Analysis Result</h3>
-            <div id="resultContent" class="result-content"></div>
-        </div>
-    </div>
-    
-    <script>
-        // File upload handling
-        document.getElementById('resumeFile').addEventListener('change', function(e) {
-            const fileSelected = document.getElementById('fileSelected');
-            if (e.target.files.length > 0) {
-                fileSelected.textContent = `✅ Selected: ${e.target.files[0].name}`;
-                fileSelected.style.display = 'block';
-            } else {
-                fileSelected.style.display = 'none';
-            }
-        });
-        
-        // Analysis function
-        function analyzeResume(analysisType) {
-            const form = document.getElementById('analysisForm');
-            const formData = new FormData(form);
-            const resultSection = document.getElementById('resultSection');
-            const resultContent = document.getElementById('resultContent');
-            const resultTitle = document.getElementById('resultTitle');
-            
-            // Validate form
-            if (!formData.get('job_description').trim()) {
-                alert('Please enter a job description');
-                return;
-            }
-            
-            if (!formData.get('resume_file')) {
-                alert('Please upload a resume file');
-                return;
-            }
-            
-            // Show loading
-            resultSection.style.display = 'block';
-            resultTitle.textContent = analysisType === 'profile' ? '📋 Resume Profile Analysis' : '📊 Match Percentage Analysis';
-            resultContent.className = 'loading';
-            resultContent.textContent = 'Analyzing your resume... This may take a few moments';
-            
-            // Add analysis type to form data
-            formData.append('analysis_type', analysisType);
-            
-            // Send request
-            fetch('/analyze', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                resultContent.className = 'result-content';
-                if (data.success) {
-                    resultContent.textContent = data.result;
-                } else {
-                    resultContent.textContent = `Error: ${data.error}`;
-                }
-            })
-            .catch(error => {
-                resultContent.className = 'result-content';
-                resultContent.textContent = `Error: ${error.message}`;
-            });
-        }
-    </script>
-</body>
-</html>
-'''
-
-# Routes
-@app.route('/')
-def index():
-    if 'user_id' in session:
-        return redirect(url_for('dashboard'))
-    return redirect(url_for('login'))
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        
-        conn = sqlite3.connect('ats_app.db')
-        c = conn.cursor()
-        c.execute('SELECT id, username, password_hash FROM users WHERE username = ?', (username,))
-        user = c.fetchone()
-        conn.close()
-        
-        if user and check_password_hash(user[2], password):
-            session['user_id'] = user[0]
-            session['username'] = user[1]
-            flash('Login successful!', 'success')
-            return redirect(url_for('dashboard'))
-        else:
-            flash('Invalid username or password')
-    
-    return render_template_string(LOGIN_TEMPLATE)
-
-@app.route('/signup', methods=['GET', 'POST'])
-def signup():
-    if request.method == 'POST':
-        username = request.form['username']
-        email = request.form['email']
-        password = request.form['password']
-        confirm_password = request.form['confirm_password']
-        
-        if password != confirm_password:
-            flash('Passwords do not match')
-            return render_template_string(SIGNUP_TEMPLATE)
-        
-        if len(password) < 6:
-            flash('Password must be at least 6 characters long')
-            return render_template_string(SIGNUP_TEMPLATE)
-        
-        conn = sqlite3.connect('ats_app.db')
-        c = conn.cursor()
-        
-        # Check if username or email already exists
-        c.execute('SELECT id FROM users WHERE username = ? OR email = ?', (username, email))
-        if c.fetchone():
-            flash('Username or email already exists')
-            conn.close()
-            return render_template_string(SIGNUP_TEMPLATE)
-        
-        # Create new user
-        password_hash = generate_password_hash(password)
-        c.execute('INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
-                  (username, email, password_hash))
-        conn.commit()
-        conn.close()
-        
-        flash('Account created successfully! Please login.', 'success')
-        return redirect(url_for('login'))
-    
-    return render_template_string(SIGNUP_TEMPLATE)
-
-@app.route('/dashboard')
-def dashboard():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-    
-    return render_template_string(DASHBOARD_TEMPLATE, session=session)
-
-@app.route('/analyze', methods=['POST'])
-def analyze():
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'error': 'Not authenticated'})
-    
+@app.post("/api/analyze", response_model=AnalysisResponse)
+async def analyze_resume(
+    job_description: str = Form(...),
+    analysis_type: str = Form(...),
+    resume_file: UploadFile = File(...)
+):
     try:
-        job_description = request.form['job_description']
-        analysis_type = request.form['analysis_type']
-        uploaded_file = request.files['resume_file']
+        # Validate file
+        if not resume_file.filename.lower().endswith('.pdf'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only PDF files are allowed"
+            )
         
-        if not uploaded_file or uploaded_file.filename == '':
-            return jsonify({'success': False, 'error': 'No file uploaded'})
-        
-        if not uploaded_file.filename.lower().endswith('.pdf'):
-            return jsonify({'success': False, 'error': 'Only PDF files are allowed'})
+        # Check file size
+        contents = await resume_file.read()
+        if len(contents) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File size too large. Maximum 16MB allowed."
+            )
         
         # Process PDF
-        pdf_content = input_pdf_setup(uploaded_file)
+        pdf_content = input_pdf_setup(contents)
         
         # Choose prompt based on analysis type
         if analysis_type == 'profile':
@@ -887,13 +163,18 @@ def analyze():
             Please share your professional evaluation on whether the candidate's profile aligns with the role. 
             Highlight the strengths and weaknesses of the applicant in relation to the specified job requirements.
             """
-        else:  # match
+        elif analysis_type == 'match':
             prompt = """
             You are a skilled ATS (Applicant Tracking System) scanner with a deep understanding of data science and ATS functionality. 
             Your task is to evaluate the resume against the provided job description. 
             Give me the percentage of match if the resume matches the job description. 
             First, the output should come as a percentage, followed by missing keywords, and finally your overall thoughts.
             """
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid analysis type. Must be 'profile' or 'match'"
+            )
         
         # Get AI response
         result = get_gemini_response(job_description, pdf_content, prompt)
@@ -901,24 +182,142 @@ def analyze():
         # Save analysis to database
         conn = sqlite3.connect('ats_app.db')
         c = conn.cursor()
-        c.execute('INSERT INTO analyses (user_id, job_description, analysis_type, result) VALUES (?, ?, ?, ?)',
-                  (session['user_id'], job_description, analysis_type, result))
+        c.execute('INSERT INTO analyses (job_description, analysis_type, result) VALUES (?, ?, ?)',
+                  (job_description, analysis_type, result))
         conn.commit()
         conn.close()
         
-        return jsonify({'success': True, 'result': result})
+        return AnalysisResponse(success=True, result=result)
     
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        return AnalysisResponse(success=False, error=str(e))
 
-@app.route('/logout')
-def logout():
-    session.clear()
-    flash('You have been logged out successfully.', 'success')
-    return redirect(url_for('login'))
+@app.get("/api/analyses")
+async def get_analyses():
+    conn = sqlite3.connect('ats_app.db')
+    c = conn.cursor()
+    c.execute('''
+        SELECT id, job_description, analysis_type, result, created_at 
+        FROM analyses 
+        ORDER BY created_at DESC
+        LIMIT 50
+    ''')
+    analyses = c.fetchall()
+    conn.close()
+    
+    return [
+        {
+            "id": analysis[0],
+            "job_description": analysis[1][:100] + "..." if len(analysis[1]) > 100 else analysis[1],
+            "analysis_type": analysis[2],
+            "result": analysis[3][:200] + "..." if len(analysis[3]) > 200 else analysis[3],
+            "created_at": analysis[4]
+        }
+        for analysis in analyses
+    ]
 
-if __name__ == '__main__':
-    print("🚀 Starting ATS Resume Analyzer Web App...")
-    print("📱 Access the app at: http://localhost:5000")
+@app.get("/api/analysis/{analysis_id}")
+async def get_analysis(analysis_id: int):
+    conn = sqlite3.connect('ats_app.db')
+    c = conn.cursor()
+    c.execute('''
+        SELECT id, job_description, analysis_type, result, created_at 
+        FROM analyses 
+        WHERE id = ?
+    ''', (analysis_id,))
+    analysis = c.fetchone()
+    conn.close()
+    
+    if not analysis:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Analysis not found"
+        )
+    
+    return {
+        "id": analysis[0],
+        "job_description": analysis[1],
+        "analysis_type": analysis[2],
+        "result": analysis[3],
+        "created_at": analysis[4]
+    }
+
+@app.delete("/api/analysis/{analysis_id}")
+async def delete_analysis(analysis_id: int):
+    conn = sqlite3.connect('ats_app.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM analyses WHERE id = ?', (analysis_id,))
+    if c.rowcount == 0:
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Analysis not found"
+        )
+    conn.commit()
+    conn.close()
+    
+    return {"message": "Analysis deleted successfully"}
+
+@app.get("/api/stats")
+async def get_stats():
+    conn = sqlite3.connect('ats_app.db')
+    c = conn.cursor()
+    
+    # Get total analyses count
+    c.execute('SELECT COUNT(*) FROM analyses')
+    total_analyses = c.fetchone()[0]
+    
+    # Get analyses by type
+    c.execute('SELECT analysis_type, COUNT(*) FROM analyses GROUP BY analysis_type')
+    analyses_by_type = dict(c.fetchall())
+    
+    # Get recent analyses count (last 7 days)
+    c.execute('''
+        SELECT COUNT(*) FROM analyses 
+        WHERE created_at >= datetime('now', '-7 days')
+    ''')
+    recent_analyses = c.fetchone()[0]
+    
+    conn.close()
+    
+    return {
+        "total_analyses": total_analyses,
+        "analyses_by_type": analyses_by_type,
+        "recent_analyses": recent_analyses,
+        "timestamp": datetime.utcnow()
+    }
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": datetime.utcnow()}
+
+# Exception handlers
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"}
+    )
+
+if __name__ == "__main__":
+    print("🚀 Starting ATS Resume Analyzer FastAPI Server...")
+    print("📱 Server: http://localhost:8000")
+    print("📚 API Documentation: http://localhost:8000/docs")
+    print("🔧 Interactive API: http://localhost:8000/redoc")
     print("💡 Make sure to update the Poppler path in the code for PDF processing")
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    print("✨ No authentication required - ready to analyze resumes!")
+    
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )
