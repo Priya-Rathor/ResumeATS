@@ -130,7 +130,7 @@ async def root():
     </html>
     """
 
-@app.post("/api/analyze", response_model=AnalysisResponse)
+@app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_resume(
     job_description: str = Form(...),
     analysis_type: str = Form(...),
@@ -192,7 +192,7 @@ async def analyze_resume(
     except Exception as e:
         return AnalysisResponse(success=False, error=str(e))
 
-@app.get("/api/analyses")
+@app.get("/analyses")
 async def get_analyses():
     conn = sqlite3.connect('ats_app.db')
     c = conn.cursor()
@@ -216,7 +216,7 @@ async def get_analyses():
         for analysis in analyses
     ]
 
-@app.get("/api/analysis/{analysis_id}")
+@app.get("/analysis/{analysis_id}")
 async def get_analysis(analysis_id: int):
     conn = sqlite3.connect('ats_app.db')
     c = conn.cursor()
@@ -242,7 +242,7 @@ async def get_analysis(analysis_id: int):
         "created_at": analysis[4]
     }
 
-@app.delete("/api/analysis/{analysis_id}")
+@app.delete("/analysis/{analysis_id}")
 async def delete_analysis(analysis_id: int):
     conn = sqlite3.connect('ats_app.db')
     c = conn.cursor()
@@ -258,7 +258,7 @@ async def delete_analysis(analysis_id: int):
     
     return {"message": "Analysis deleted successfully"}
 
-@app.get("/api/stats")
+@app.get("/stats")
 async def get_stats():
     conn = sqlite3.connect('ats_app.db')
     c = conn.cursor()
