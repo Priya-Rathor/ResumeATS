@@ -1,5 +1,10 @@
-streamlit
 google-generativeai
 python-dotenv
 pdf2image
 flask
+fastapi
+uvicorn
+python-dotenv
+requests
+pypdf   
+python-pptx  
