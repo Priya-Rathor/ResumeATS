@@ -8,3 +8,4 @@ python-dotenv
 requests
 pypdf   
 python-pptx  
+python-multipart
